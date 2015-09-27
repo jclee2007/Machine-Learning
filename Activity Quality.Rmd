@@ -1,0 +1,71 @@
+---
+title: "Predicting the Classe of Activities from Fitness Devices"
+author: "John Lee"
+---
+
+# Summary
+This project analyzes the data from accelerometers from personal activity trackers and predicts the activity "classe" (i.e. the manner in which the exercise was performed).  Variables were selected from the Human Activity Recognition data set and a Random Forest prediction model was created on the training data.  K-fold cross validation was utilized, generating a model with 99% Accuracy and estimated OOB error rate of 0.41%.  The Random Forest model was then used to generate prediction on the testing data set -- correctly predicting the "classe" for all 20 test observations.
+
+# Data Loading and Variable Selection
+The training and testing datasets are loaded. Summary of the training data set reveals that many of the 160 variables contained blanks or NAs for majority of the observations.  These variables are identified and removed.  In addition, the first seven (7) variables (i.e. user identifiers, time stamps and windows indicators) are also excluded from training and testing data sets, as they do not contribute to prediction.
+```{r echo=TRUE, cache=TRUE}
+setwd("C:/Users/jlee/Documents/Data Science/Machine Learning/")
+training <- read.csv(file="pml-training.csv",header=TRUE, sep=",")
+testing <- read.csv(file="pml-testing.csv",header=TRUE, sep=",")
+training[training ==""] <- NA
+na_count <- rep(0,160)
+for (i in 1:160) {na_count[i] <- sum(is.na(training[,i]))}
+training <- training[,na_count == 0]
+training <- training[,8:60]
+testing <- testing[,na_count == 0]
+testing <- testing[,8:60]
+```
+
+
+# Further Pre-Processing
+Next, for the remaining variables, a correlation matrix is created and variables with correlation of 0.8 or greater are excluded from both testing and training data sets.  This will help improve the results of the Random Forest model in terms of reduced over-fitting issues as well as increase computing performance.   
+```{r echo=TRUE, cache=TRUE}
+suppressMessages(library(caret))
+correlationmatrix <- cor(testing[,1:52])
+highlyCorrelated <- findCorrelation(correlationmatrix, cutoff=0.8)
+training <- training[,-highlyCorrelated]
+testing <- testing[,-highlyCorrelated]
+```
+
+#  Predictive Model and Cross Validation
+Given the non-linear relationship amongst variables and predicted values, glm models were deemed inappropriate for the task.  Instead, a Random Forest model is utilized as it tends to produce highly accurate predictions.  Training the Random Forest model with default controls -- boosting, resampling with replacement, and an unspecified numer of variable per node (i.e. mtry) -- did not result in a model after 1 hour of computation.  Being inpatient, the Random Forest model was then tuned to performn 10-Fold cross validation (i.e. K=10) and mtry = 6.  With these setting, the resulting model fit is geneated in approximately 10 minutes.  
+```{r echo=TRUE, cache=TRUE}
+suppressMessages(library(randomForest))
+fitControl <- trainControl(method = "cv",number=10,allowParallel=TRUE)
+tgrid <- expand.grid(mtry=c(6))
+modfit  <- train(classe~.,data = training, method="rf",trControl=fitControl, tuneGrid = tgrid)
+```
+
+# Model Accuracy and OOB Error Rate
+The resulting Random Forest Model has accuracy of 99% which is very good. 
+```{r echo=TRUE, cache=TRUE}
+modfit
+```
+The resulting Random Forest model has an estimated OOB error rate of 0.41%, which is also very good.
+```{r echo=TRUE, cache=TRUE}
+modfit$finalModel
+```
+
+#  Predictions
+The model is then used to generate classe preditions for the 20 observations in the testing data set.
+```{r echo=TRUE, cache=TRUE}
+pred <- predict(modfit,testing)
+pred
+```
+
+And, the predictions are written into separate files for submission.  Predictions are all correct!
+```{r}
+pml_write_files = function(x){
+  n = length(x)
+  for(i in 1:n){
+    filename = paste0("problem_id_",i,".txt")
+    write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+  }
+}
+pml_write_files(pred)
+```
