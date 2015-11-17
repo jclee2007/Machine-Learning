@@ -1,0 +1,297 @@
+---
+title: "SS Analysis"
+author: "John Lee"
+date: "Sunday, October 25, 2015"
+---
+
+Priviledged and Confidential.  Not to be copied or reproduced without the expressed written consent of the author.
+
+
+#  Executive Summary
+This report analyzes the searchlog, clickstream and appointment data spanning 8/15/15 to  8/31/15, provided by SS.  The objectives of this analysis are to a) define the KPIs and benchmarks b) define user cluster and preliminary personas, based on the data.
+
+#  Preliminary Data Processing
+Load data into R and prepare tidy data frames.
+
+```{r, echo =TRUE}
+#  Set working directory and load raw data into dataframes
+setwd("C:/Users/jlee/Documents/Personal/SS")
+appt <- read.table('appointments_08150901.tsv', header=TRUE, sep="\t")
+# clickstream <- read.csv("clickstream_08150901.csv",header=TRUE)
+searchlog <- read.csv("searchlog_08150901.csv",header=TRUE)
+searchlog$query <- tolower(searchlog$query)
+
+#  Create nominal variables of search parameters to be used in summarization
+hasdate <- as.numeric(grepl("start_date=2015",searchlog$api_url)) #search by date
+loctype <- rep("default",times = length(searchlog$location)) #search by type of location
+loctype[grepl("[0-9]{5}",searchlog$location)] <- "zip"
+loctype[grepl("[a-zA-Z]",searchlog$location)] <- "city"
+prodtype <- rep("custom",times = length(searchlog$location)) #seach by product
+prodtype[searchlog$query == "haircut style barber braids weaves extensions nails makeup color massage relaxer wax updo facial blowout"] <- "all"
+prodtype[grepl("^hair cut$",searchlog$query)] <- "hair cut"
+prodtype[grepl("^style$",searchlog$query)] <- "style"
+prodtype[grepl("^barber$",searchlog$query)] <- "barber"
+prodtype[grepl("^braids$",searchlog$query)] <- "braids"
+prodtype[grepl("^weaves & extensions$",searchlog$query)] <- "w & e"
+prodtype[grepl("^nails$",searchlog$query)] <- "nails"
+prodtype[grepl("^makeup$",searchlog$query)] <- "makeup"
+prodtype[grepl("^color$",searchlog$query)] <- "color"
+hasprice <- as.numeric(grepl("(max_price=|min_price=)",searchlog$api_url)) #search by price
+bookable <- as.numeric(grepl("online_bookable=",searchlog$api_url)) #search by online booking
+autocharge <- as.numeric(grepl("autocharge_enabled=",searchlog$api_url)) #search by ExpressPay
+brands <- as.numeric(grepl("selected_brand=",searchlog$api_url)) #search by brand
+login <- rep(0,times = length(searchlog$location)) #search by whether user is logged in or not
+login[!searchlog$user_id == "NULL"] <- 1
+
+#  Create binary variables for key search parameters to be used in clustering and summarization.  Append binary variables to search dataset.
+search <- searchlog
+search <- cbind(search,bookable,login,loctype,prodtype)
+search$bookable <- as.factor(search$bookable)
+search$login <- as.factor(search$login)
+search$loc_city <- 0
+search$loc_city[loctype == "city"] <- 1
+search$loc_zip <- 0
+search$loc_zip[loctype == "zip"] <- 1
+search$loc_default <- 0
+search$loc_default[loctype == "default"] <- 1
+search$prod_custom <- 0
+search$prod_custom[prodtype == "custom"] <- 1
+search$prod_all <- 0
+search$prod_all[prodtype == "all"] <- 1
+search$prod_haircut <- 0
+search$prod_haircut[prodtype == "hair cut"] <- 1
+search$prod_style <- 0
+search$prod_style[prodtype == "style"] <- 1
+search$prod_barber <- 0
+search$prod_barber[prodtype == "barber"] <- 1
+search$prod_braids <- 0
+search$prod_braids[prodtype == "braids"] <- 1
+search$prod_we <- 0
+search$prod_we[prodtype == "w & e"] <- 1
+search$prod_nails <- 0
+search$prod_nails[prodtype == "nails"] <- 1
+search$prod_makeup <- 0
+search$prod_makeup[prodtype == "makeup"] <- 1
+search$prod_color <- 0
+search$prod_color[prodtype == "color"] <- 1
+search$book <- as.numeric(search$bookable) - 1
+search$loggedin <- as.numeric(search$login) - 1
+search$search_count <- 1
+
+#  Merge (i.e. left join) search and appointment data into "m1" dataset
+m1 <- merge(search, appt, by.x="id", by.y="id", all.x = TRUE)
+m1$appt_count <- as.numeric(!is.na(m1$provider_id))
+
+```
+
+
+# Exploratory Data Analysis
+Analysis of searchlog data indicates no searches exist with a "page" parameter in api_url, which would result if user scrolled to page two of results.  This suggests the searchlog data represents users' **initial** searches only.  
+
+The table below shows the number of searches by search parameter. Zero ("0") indicates that the parameter is not present, whereas a one ("1") indicates that the search contains the parameter.
+
+```{r, echo=TRUE}
+searchmix <- as.data.frame(cbind(autocharge,bookable,brands,hasdate,hasprice,login,loctype,prodtype))
+library(scales)
+summary(searchmix)
+```
+
+The table above indicates:
+
+  - There are few searches involving Expresspay (autocharge), Brands (brands), Date (hasdate) and Price (hasprice).  As a result, these parameters can be excluded in the subsequent clustering analysis.
+
+  - The Date parameter can become a facet/filter option displayed after the initial search as oppose to a primary search parameter
+
+  - Looking at location types (i.e. "loctype"), we see that `r percent(sum(search$loc_default)/sum(search$search_count))` of searches were for the default, pre-populated location (records with location = NULL in searchlog dataset).  `r percent(sum(search$loc_city)/sum(search$search_count))` of searches were by user specified city, and only `r percent(sum(search$loc_zip)/sum(search$search_count))` of searches were by Zip Code.
+
+
+Generate summary of searches by product:
+```{r, echo=TRUE}
+suppressMessages(library(dplyr))
+prodmix <- prop.table(table(searchmix$prodtype))
+prodmix <- as.data.frame(prodmix)
+names(prodmix) <- c("product","pctTotal")
+prodmix <- arrange(prodmix, desc(pctTotal))
+prodmix$pctTotal <- percent(prodmix$pctTotal)
+print(prodmix)
+```
+
+The product mix table above indicates:
+
+  - `r percent(sum(search$prod_custom)/sum(search$search_count))` of searches were for a custom, user specified keyword.  We suspect that the majority of such searches were for specific Stylists.
+
+  - `r percent(sum(search$prod_all)/sum(search$search_count))` of searches were for a general product search (denoted as "all" in the table below).  This is either due to users clearing out the product field or from sharing of deep link search URLs as part of advertising campaigns (per Greg Garson).
+  
+  -  `r percent(sum(search$prod_hair)/sum(search$search_count))` of searches were for "Hair Cut", which is the default on the website
+
+Finally, after merging searchs and appointment datasets, we find that only **`r sum(m1$appt_count)`** appointments were as a result of searches in the searchlog dataset.  This appears too low given the search volume.  This analysis utilizes this appointment count going forward, but it should be validated with SS personnel. 
+```{r, echo=TRUE}
+options(scipen=999)
+sum(m1$appt_count)
+```
+
+#  Search Performance KPIs
+The follow KPIs are important for search.  These KPIs should be monitored at several levels: Overall, By Product and By Location type.  In addition, KPIs should be tracked and trended over time.
+
+  1. Appointments per Search (and $ per Search)
+  2. Results per Search
+  3. Clicks per Search
+  4. Zero Results Searches
+
+### Overall
+Following are the overall metrics calculated from the data provided: 
+
+  1. Appointments per Search = `r sum(m1$appt_count) / sum(m1$search_count)`.  As noted above, appointments related to searches appear too low and should be validated with SS.
+  2. Results per Search = `r sum(m1$num_found) / sum(m1$search_count)`
+  3. Clicks per Search = `r sum(m1$clicklog_count)/ sum(m1$search_count)`
+  4. Zero Results Searches = `r sum(m1$search_count[m1$num_found == 0])` searches
+
+### By Product
+Below are the Search Performance KPIs by products searched, ordered by "Clicks per Search" from highest to lowest.
+```{r, echo=TRUE}
+byprod <- aggregate(cbind(appt_count,num_found,clicklog_count,search_count) ~ prodtype,m1,sum)
+byprod <- mutate(byprod, appt_per_search = appt_count / search_count, results_per_search = num_found / search_count, click_per_search = clicklog_count / search_count)
+byprod <- arrange(byprod,desc(click_per_search))
+print(byprod)
+```
+
+From the table above we observe:
+
+  -  There is significant variability in both "Results per Search"" and "Clicks per Search" across products  
+  -  "Makeup" generates the highest "Click per Search" on fewer "Results per Search"
+  -  In contrast, "Color" generates the lowest "Click per Search" on the highest "Results per Search"
+  -  The "All" (i.e. default) product category follows "Color" with the second lowest "Clicks per Search"
+
+The scatter plot below shows the invese relationship between "Results per Search" and "Clicks per Search" across product searches.  As the number of Stylists returned increases, results become less relevant to the user and thus generate less "Clicks per Search."  This suggests improvements are needed to the search algorithms employed.
+
+```{r, echo=TRUE, fig.width=10, fig.height=5}
+library(ggplot2)
+q <- ggplot(byprod,aes(results_per_search,click_per_search,color=prodtype,label=prodtype))
+q <- q + geom_point(size=5) + geom_text(size=5, hjust = 0, vjust = -1) + geom_smooth(method="lm", aes(group=1)) + ggtitle("Search Performance by Product") + scale_y_continuous(limit = c(0, 1)) + scale_x_continuous(limit = c(0, 800))
+q
+```
+
+### By Location Type
+Below are the Search Performance KPIs by Location Types, ordered by "Clicks per Search" from highest to lowest.
+```{r, echo=TRUE}
+byloc <- aggregate(cbind(appt_count,num_found,clicklog_count,search_count) ~ loctype,m1,sum)
+byloc <- mutate(byloc, appt_per_search = appt_count / search_count, results_per_search = num_found / search_count, click_per_search = clicklog_count / search_count)
+byloc <- arrange(byloc,desc(click_per_search))
+byloc
+```
+
+From the table above we observe:
+
+  -  Searches where user specifies Zip Code or City have high "Click per Search"
+  
+  -  For Zip Code searches, the "Results per Search" are also quite low, indicating that very focused and relevant results returned to the user
+  
+  -  However, the  vast majority of searches are for default locations, which generate very high "Results per Search" but very low "Click per Search," at about one-tenth that of Zip Code searches 
+
+The scatter plot below shows "Results per Search" and "Clicks per Search" for the different location types.  Default locations should be tracked more granularly, and further disected to improve relevancy to user. 
+
+```{r, echo=TRUE, fig.width=10, fig.height=5}
+q <- ggplot(byloc,aes(results_per_search,click_per_search,color=loctype,label=loctype))
+q <- q + geom_point(size=5) + geom_text(size=5, hjust = 0, vjust = -1) + ggtitle("Search Performance by Product") + scale_y_continuous(limit = c(0, 1)) + scale_x_continuous(limit = c(0, 800))
+q
+```
+
+# User Clusters and Personas
+From the searchlog data, user segments are derived using a Hierachical Clustering.  Once defined, clusters are profiled and preliminary personas are described.
+```{r, echo=TRUE}
+#  Conduct hierarchical clustering of user searchlog data.  Given computing limitations, searchlog data is sampled.  The process is repeated many times for different samples to ensure that the number and definitions of clusters are stable.  Through this process, 6 clusters were defined.  
+set.seed(3443) # remove seed to generate new scenario
+suppressWarnings(library("cluster"))
+pct_to_sample <-.05 #5 pct sample
+df1_sample<-m1[sample(1:nrow(m1),nrow(m1)*pct_to_sample),]
+df1_dist <- daisy(df1_sample[,11:14], metric="gower")
+hclustering <- hclust(df1_dist,method="average")
+```
+
+The dendrogram below shows the results of the hierarchical clustering.  From the dendrogarm, 6 primary clusters of users are observed.
+```{r, echo=TRUE, fig.width=10}
+plot(hclustering,labels=FALSE,hang=0)
+```
+
+Below are the relative size of each user cluster, based on the propotion of searches in each.
+```{r}
+tree_cut<-cutree(hclustering,6)  # 6 clusters were defined through clustering.  Cut the tree to generate 6 clusters
+df1_sample$cluster <- tree_cut #Add the cluster membership back to the sampled search dataset
+cluster_profiles <-aggregate(df1_sample[,c(7,15:30,38),],by=list(cluster=df1_sample$cluster),FUN=sum)
+clustmix <- prop.table(table(df1_sample$cluster))
+clustmix <- as.data.frame(clustmix)
+names(clustmix) <- c("cluster","pctTotal")
+clustmix <- arrange(clustmix, desc(pctTotal))
+clustmix$pctTotal <- percent(clustmix$pctTotal)
+print(clustmix)
+```
+
+Create and display profiles for each cluster.
+```{r, echo=TRUE}
+# Aggregate by cluster. Convert to percentage of the cluster.
+cluster_profiles$clicklog_count <- (cluster_profiles$clicklog_count/cluster_profiles$search_count)
+names(cluster_profiles)[2] <- "clicks_per_search"
+cluster_profiles$loc_city <- percent(cluster_profiles$loc_city/cluster_profiles$search_count)
+cluster_profiles$loc_zip <- percent(cluster_profiles$loc_zip/cluster_profiles$search_count)
+cluster_profiles$loc_default <- percent(cluster_profiles$loc_default/cluster_profiles$search_count)
+cluster_profiles$prod_custom <- percent(cluster_profiles$prod_custom/cluster_profiles$search_count)
+cluster_profiles$prod_all <- percent(cluster_profiles$prod_all/cluster_profiles$search_count)
+cluster_profiles$prod_haircut <- percent(cluster_profiles$prod_haircut/cluster_profiles$search_count)
+cluster_profiles$prod_style <- percent(cluster_profiles$prod_style/cluster_profiles$search_count)
+cluster_profiles$prod_barber <- percent(cluster_profiles$prod_barber/cluster_profiles$search_count)
+cluster_profiles$prod_braids <- percent(cluster_profiles$prod_braids/cluster_profiles$search_count)
+cluster_profiles$prod_we <- percent(cluster_profiles$prod_we/cluster_profiles$search_count)
+cluster_profiles$prod_nails <- percent(cluster_profiles$prod_nails/cluster_profiles$search_count)
+cluster_profiles$prod_makeup <- percent(cluster_profiles$prod_makeup/cluster_profiles$search_count)
+cluster_profiles$prod_color <- percent(cluster_profiles$prod_color/cluster_profiles$search_count)
+cluster_profiles$book <- percent(cluster_profiles$book/cluster_profiles$search_count)
+cluster_profiles$loggedin <- percent(cluster_profiles$loggedin/cluster_profiles$search_count)
+print(cluster_profiles)
+```
+
+
+### Preliminary Personas
+From the profile data above, we can surmize the characteristics of users in each cluster
+
+  - Cluster 1:  "Stylist Seekers" 
+    * Summary Descption:  Non-member users, actively seeking particular Stylists.
+    * This is the largest cluster, representing `r clustmix$pctTotal[1]` of the overall population
+    * Users searched for a specific Stylist, with `r cluster_profiles$prod_custom[1]` of searches for unique keywords
+    * Users are active seekers, given high clicks per search  
+    * Users are not members (0% logged in) and not interested in online booking of appointments
+    * Users location preferences were similar to the overall population, with a mix of default, city and post codes searches
+
+
+  - Cluster 2:  "Hair Color Browsers"
+    * Summary Descption:  Member users, browsing for hair color services and Stylists 
+    * This is the second largest cluster, representing `r clustmix$pctTotal[2]` of the overall population
+    * Users have elevated interest in "Color", with `r cluster_profiles$prod_color[2]` of searchs for this product
+    * Users are generally just browsing, given low clicks per search  
+    * Users are happy searching their pre-populated location, with 100% of searchs performed with the default
+    * Users are logged in, which may explain high usage of the default location.  When logged in, is user location populated in the search box?
+
+
+  - Cluster 3:  "Active Appointment Seekers"
+    * Summary Description:  Non-member users, actively seeking stylists with online booking capabilities  
+    * This is the third largest cluster, representing `r clustmix$pctTotal[3]` of the overall population
+    * Users are active, given high clicks per search  
+    * Users are non-members (i.e. 0% logged in) and interested in online booking of appointments
+    * Users are interested in a broad set of products, but not satisfied searching for "all"
+    * Users location preferences were similar to the overall population, with a mix of default, city and post codes searches
+
+
+  - Cluster 4:  "Hair Color Browser + Online Appointments"
+    * Summary Descption:  Similar to cluster #2, but users are also online appointment seekers.  These users browse for hair color services and Stylists. 
+    * This is the fourth largest cluster, representing `r clustmix$pctTotal[4]` of the overall population
+    * Users have elevated interest in "Color", with `r cluster_profiles$prod_color[4]` of searchs for this product
+    * Users are generally just browsing, given low clicks per search  
+    * Users are happy searching their pre-populated location, with 100% of searchs performed with the default
+    * Users are logged in and interested in online booking of appointments
+
+
+  - Cluster 5 and 6:  "Local Searchers"
+    * Summary Description:  Users interested in local/nearby stylists 
+    * These two clusters are small, making up `r clustmix$pctTotal[5]` and `r clustmix$pctTotal[6]` of the overall population for cluster 5 and 6 respectively
+    * Users are active, given clicks per search are greater than 1
+    * Users search predominantly for their specfic City or Zip Codes.  Location matters to these users.
+
